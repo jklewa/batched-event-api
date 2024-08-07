@@ -1,2 +1,4 @@
 /data
 *.csv
+# output binary
+batched-event-api

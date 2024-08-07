@@ -1,0 +1,8 @@
+services:
+  web:
+    build: .
+    command: [ "/bin/main", "-o", "/data" ]
+    ports:
+      - "8080:8080"
+    volumes:
+      - "./data/:/data"

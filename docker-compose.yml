@@ -1,7 +1,7 @@
 services:
   web:
     build: .
-    command: [ "/bin/main", "-o", "/data" ]
+    command: [ "/bin/main", "-o", "/data", "-host", "" ]
     ports:
       - "8080:8080"
     volumes:

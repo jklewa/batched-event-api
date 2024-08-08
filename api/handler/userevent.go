@@ -21,6 +21,7 @@ type UserEventHandler struct {
 	autoCloseAfter time.Duration
 
 	openTime       time.Time
+	firstEventTime time.Time
 	openFile       *os.File
 	openDataWriter *csv.Writer
 }
@@ -31,6 +32,7 @@ func NewUserEventHandler(outputDir string, batchInterval time.Duration, autoClos
 		batchInterval:  batchInterval,
 		autoCloseAfter: autoCloseAfter,
 		openTime:       time.Time{},
+		firstEventTime: time.Time{},
 		openFile:       nil,
 		openDataWriter: nil,
 	}
@@ -49,9 +51,6 @@ func (h *UserEventHandler) closeOpenFileWriterRoutine() {
 }
 
 func (h *UserEventHandler) closeExpiredFile() {
-	h.Lock()
-	defer h.Unlock()
-
 	if h.openFile != nil && time.Since(h.openTime) >= h.autoCloseAfter {
 		log.Printf("closing expired file: %s\n", h.openFile.Name())
 		err := h.CloseFileAndWriter()
@@ -84,10 +83,13 @@ func (h *UserEventHandler) Handler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *UserEventHandler) CloseFileAndWriter() error {
+	h.Lock()
 	defer func() {
 		h.openTime = time.Time{}
+		h.firstEventTime = time.Time{}
 		h.openDataWriter = nil
 		h.openFile = nil
+		h.Unlock()
 	}()
 	if h.openDataWriter != nil {
 		h.openDataWriter.Flush()
@@ -104,6 +106,8 @@ func (h *UserEventHandler) CloseFileAndWriter() error {
 }
 
 func (h *UserEventHandler) createNewFileWriter(event *types.UserEvent) error {
+	h.Lock()
+	defer h.Unlock()
 	newOutputFileName := fmt.Sprintf(
 		"user-events-%s.csv",
 		event.Time.Format("20060102-150405"))
@@ -117,6 +121,7 @@ func (h *UserEventHandler) createNewFileWriter(event *types.UserEvent) error {
 	}
 	h.openDataWriter = csv.NewWriter(h.openFile)
 	h.openTime = time.Now()
+	h.firstEventTime = event.Time
 	return nil
 }
 
@@ -129,7 +134,6 @@ func (h *UserEventHandler) writeEventDataCSV(event *types.UserEvent) error {
 }
 
 func (h *UserEventHandler) handleUserEvent(w http.ResponseWriter, scanner *bufio.Scanner) error {
-	firstEventTime := time.Time{}
 	for scanner.Scan() {
 		// Parse a new line of JSON user event data
 		var event types.UserEvent
@@ -138,7 +142,7 @@ func (h *UserEventHandler) handleUserEvent(w http.ResponseWriter, scanner *bufio
 		}
 
 		// Do we need to rotate output files?
-		if event.Time.Sub(firstEventTime) > h.batchInterval {
+		if event.Time.Sub(h.firstEventTime) >= h.batchInterval {
 			if h.openDataWriter != nil {
 				err := h.CloseFileAndWriter()
 				if err != nil {
@@ -149,7 +153,6 @@ func (h *UserEventHandler) handleUserEvent(w http.ResponseWriter, scanner *bufio
 
 		// Do we need to start a new output file?
 		if h.openDataWriter == nil {
-			firstEventTime = event.Time
 			err := h.createNewFileWriter(&event)
 			if err != nil {
 				return err

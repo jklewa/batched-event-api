@@ -15,8 +15,8 @@ import (
 
 func generateUserEvents(start time.Time, interval time.Duration, end time.Time) []types.UserEvent {
 	num := int(end.Sub(start) / interval)
-	events := make([]types.UserEvent, num+1)
-	for i := 0; i <= num; i++ {
+	events := make([]types.UserEvent, num)
+	for i := 0; i < num; i++ {
 		events[i] = types.UserEvent{
 			Time: start.Add(time.Duration(i) * interval),
 		}
@@ -45,17 +45,17 @@ func Test_userEventHandler_handleUserEvent(t *testing.T) {
 	eventInterval := 1 * time.Second
 	batchInterval := 5 * time.Minute
 	fileIntervals := []time.Time{
-		firstBatchStartTime,
 		firstBatchStartTime.Add(1 * batchInterval),
 		firstBatchStartTime.Add(2 * batchInterval),
+		firstBatchStartTime.Add(3 * batchInterval),
 	}
-	setupContent := map[string][]types.UserEvent{
-		"user-events-20240701-020304.csv": generateUserEvents(fileIntervals[0], eventInterval, fileIntervals[1]),
-		"user-events-20240701-020805.csv": append(
-			generateUserEvents(fileIntervals[1], eventInterval, firstBatchEndTime),
-			generateUserEvents(secondBatchStartTime, eventInterval, fileIntervals[2])...,
+	wantEvents := map[string][]types.UserEvent{
+		"user-events-20240701-020304.csv": generateUserEvents(firstBatchStartTime, eventInterval, fileIntervals[0]),
+		"user-events-20240701-020804.csv": append(
+			generateUserEvents(fileIntervals[0], eventInterval, firstBatchEndTime),
+			generateUserEvents(secondBatchStartTime, eventInterval, fileIntervals[1])...,
 		),
-		"user-events-20240701-021304.csv": generateUserEvents(fileIntervals[2], eventInterval, secondBatchEndTime),
+		"user-events-20240701-021304.csv": generateUserEvents(fileIntervals[1], eventInterval, secondBatchEndTime),
 	}
 	// Create a new temp directory and defer its deletion
 	tmpDir, err := os.MkdirTemp("", "user-event-handler-test")
@@ -107,39 +107,51 @@ func Test_userEventHandler_handleUserEvent(t *testing.T) {
 		t.Fatalf("Failed to close file: %v", err)
 	}
 
-	// Check the correctness of each CSV file
-	for csvName, wantEvents := range setupContent {
-		file, err := os.Open(filepath.Join(tmpDir, csvName))
+	gotEvents := map[string][]types.UserEvent{}
+	fileInfos, err := os.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to read directory %v: %v", tmpDir, err)
+	}
+	for _, fileInfo := range fileInfos {
+		filePath := filepath.Join(tmpDir, fileInfo.Name())
+		file, err := os.Open(filePath)
 		if err != nil {
-			t.Fatalf("Failed to open CSV file %v: %v", csvName, err)
+			t.Fatalf("Failed to open file %v: %v", filePath, err)
 		}
 		reader := csv.NewReader(file)
 		records, err := reader.ReadAll()
 		if err != nil {
-			t.Fatalf("Failed to read CSV file %v: %v", csvName, err)
+			t.Fatalf("Failed to read CSV file %v: %v", filePath, err)
 		}
-		var gotEvents []types.UserEvent
 		for _, record := range records {
 			eventTime, err := time.Parse(time.RFC3339Nano, record[0])
 			if err != nil {
-				t.Fatalf("Failed to parse timestamp in CSV file %v: %v", csvName, err)
+				t.Fatalf("Failed to parse timestamp in file %v: %v", filePath, err)
 			}
-			gotEvents = append(gotEvents, types.UserEvent{
+			gotEvents[fileInfo.Name()] = append(gotEvents[fileInfo.Name()], types.UserEvent{
 				Time: eventTime,
 			})
 		}
-		_ = file.Close()
-		if len(gotEvents) != len(wantEvents) {
-			t.Errorf("Mismatch in number of events stored in CSV file %v: got %v want %v",
-				csvName, len(gotEvents), len(wantEvents))
-			return
+		if err = file.Close(); err != nil {
+			t.Fatalf("Failed to close file %v: %v", filePath, err)
 		}
-		for i, wantEvent := range wantEvents {
-			if !gotEvents[i].Equal(wantEvent) {
-				t.Errorf("Mismatch in event data in CSV file %v: got %v want %v",
-					csvName, gotEvents[i], wantEvent)
+	}
+
+	// Compare wantEvents to gotEvents
+	for fileName, want := range wantEvents {
+		got, ok := gotEvents[fileName]
+		if !ok {
+			t.Errorf("File %s not found", fileName)
+			continue
+		}
+		if len(got) != len(want) {
+			t.Errorf("File %s: got %d events, want %d events", fileName, len(got), len(want))
+			continue
+		}
+		for i := range got {
+			if !got[i].Time.Equal(want[i].Time) {
+				t.Errorf("File %s: event %d: got time %s, want time %s", fileName, i, got[i].Time, want[i].Time)
 			}
-			return
 		}
 	}
 }

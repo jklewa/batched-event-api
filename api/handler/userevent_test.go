@@ -68,7 +68,7 @@ func Test_userEventHandler_handleUserEvent(t *testing.T) {
 			t.Fatalf("Failed to remove temp directory: %v", err)
 		}
 	}(tmpDir)
-	handler := NewUserEventHandler(tmpDir, batchInterval, -1)
+	handler := NewUserEventHandler(tmpDir, batchInterval, -1, -1)
 
 	// Marshal the []types.UserEvent into newline delimited json files
 	batch1Buffer := new(bytes.Buffer)

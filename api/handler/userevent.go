@@ -16,25 +16,30 @@ import (
 
 type UserEventHandler struct {
 	sync.Mutex
-	outputDir      string
-	batchInterval  time.Duration
-	autoCloseAfter time.Duration
+	outputDir         string
+	batchInterval     time.Duration
+	autoCloseAfter    time.Duration
+	autoCloseInterval time.Duration
 
-	openTime       time.Time
-	firstEventTime time.Time
-	openFile       *os.File
-	openDataWriter *csv.Writer
+	lastModifiedTime time.Time
+	firstEventTime   time.Time
+	openFile         *os.File
+	openDataWriter   *csv.Writer
+
+	shutdownTriggered bool
 }
 
-func NewUserEventHandler(outputDir string, batchInterval time.Duration, autoCloseAfter time.Duration) *UserEventHandler {
+func NewUserEventHandler(outputDir string, batchInterval time.Duration, autoCloseAfter time.Duration, autoCloseInterval time.Duration) *UserEventHandler {
 	handler := &UserEventHandler{
-		outputDir:      outputDir,
-		batchInterval:  batchInterval,
-		autoCloseAfter: autoCloseAfter,
-		openTime:       time.Time{},
-		firstEventTime: time.Time{},
-		openFile:       nil,
-		openDataWriter: nil,
+		outputDir:         outputDir,
+		batchInterval:     batchInterval,
+		autoCloseAfter:    autoCloseAfter,
+		autoCloseInterval: autoCloseInterval,
+		lastModifiedTime:  time.Time{},
+		firstEventTime:    time.Time{},
+		openFile:          nil,
+		openDataWriter:    nil,
+		shutdownTriggered: false,
 	}
 	log.SetOutput(os.Stderr)
 	if autoCloseAfter > 0 {
@@ -45,19 +50,34 @@ func NewUserEventHandler(outputDir string, batchInterval time.Duration, autoClos
 
 func (h *UserEventHandler) closeOpenFileWriterRoutine() {
 	for {
-		time.Sleep(h.autoCloseAfter)
+		time.Sleep(h.autoCloseInterval)
+		if h.shutdownTriggered {
+			break
+		}
 		h.closeExpiredFile()
 	}
 }
 
 func (h *UserEventHandler) closeExpiredFile() {
-	if h.openFile != nil && time.Since(h.openTime) >= h.autoCloseAfter {
+	if h.openFile != nil && time.Since(h.lastModifiedTime) >= h.autoCloseAfter {
 		log.Printf("closing expired file: %s\n", h.openFile.Name())
 		err := h.CloseFileAndWriter()
 		if err != nil {
 			log.Fatalf("Unable to close expired file: %s %v\n", h.openFile.Name(), err)
 		}
 	}
+}
+
+func (h *UserEventHandler) Shutdown() error {
+	h.shutdownTriggered = true
+	if h.openFile != nil {
+		log.Printf("closing open file: %s\n", h.openFile.Name())
+		err := h.CloseFileAndWriter()
+		if err != nil {
+			return fmt.Errorf("Unable to close file: %s %v\n", h.openFile.Name(), err)
+		}
+	}
+	return nil
 }
 
 func (h *UserEventHandler) Handler(w http.ResponseWriter, r *http.Request) {
@@ -85,7 +105,7 @@ func (h *UserEventHandler) Handler(w http.ResponseWriter, r *http.Request) {
 func (h *UserEventHandler) CloseFileAndWriter() error {
 	h.Lock()
 	defer func() {
-		h.openTime = time.Time{}
+		h.lastModifiedTime = time.Time{}
 		h.firstEventTime = time.Time{}
 		h.openDataWriter = nil
 		h.openFile = nil
@@ -120,7 +140,7 @@ func (h *UserEventHandler) createNewFileWriter(event *types.UserEvent) error {
 		return fmt.Errorf("failed to create new file: %s %v", fullPath, err)
 	}
 	h.openDataWriter = csv.NewWriter(h.openFile)
-	h.openTime = time.Now()
+	h.lastModifiedTime = time.Now()
 	h.firstEventTime = event.Time
 	return nil
 }
@@ -163,6 +183,7 @@ func (h *UserEventHandler) handleUserEvent(w http.ResponseWriter, scanner *bufio
 		if err != nil {
 			return err
 		}
+		h.lastModifiedTime = time.Now()
 	}
 
 	// We've processed all the data, respond and start cleanup
